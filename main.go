@@ -2,6 +2,7 @@ package main
 
 import (
 	"database/sql"
+	"encoding/csv"
 	"fmt"
 	"log"
 	"os"
@@ -248,6 +249,87 @@ func clearDebtorPaymentAmount(debtorID int) error {
 	return err
 }
 
+// --- CSV Export ---
+func generateCSV(chatID int64) (string, error) {
+	debtors, err := listDebtors(chatID)
+	if err != nil {
+		return "", err
+	}
+
+	if len(debtors) == 0 {
+		return "", fmt.Errorf("no debtors found for chat %d", chatID)
+	}
+
+	// Create a temporary file
+	tmpFile, err := os.CreateTemp("", "debts_*.csv")
+	if err != nil {
+		return "", err
+	}
+	defer tmpFile.Close() // Ensure the file is closed
+
+	writer := csv.NewWriter(tmpFile)
+	defer writer.Flush()
+
+	// Write CSV header
+	header := []string{"Debtor Name", "Total Debt", "Payment Date", "Payment Amount", "Debt Reason", "Debt Amount"}
+	if err := writer.Write(header); err != nil {
+		return "", err
+	}
+
+	for _, debtor := range debtors {
+		debts, err := listDebts(debtor.ID)
+		if err != nil {
+			return "", err
+		}
+
+		var totalDebt float64
+		for _, debt := range debts {
+			totalDebt += debt.Amount
+		}
+
+		// Format date and amount
+		paymentDateStr := ""
+		if debtor.PaymentDate.Valid {
+			paymentDateStr = debtor.PaymentDate.Time.Format("02.01.2006")
+		}
+		paymentAmountStr := ""
+		if debtor.PaymentAmount.Valid {
+			paymentAmountStr = fmt.Sprintf("%.2f", debtor.PaymentAmount.Float64)
+		}
+
+		if len(debts) > 0 { // Write a row for each debt
+			for _, debt := range debts {
+				row := []string{
+					debtor.Name,
+					fmt.Sprintf("%.2f", totalDebt), // Total for the *debtor*
+					paymentDateStr,
+					paymentAmountStr,
+					debt.Reason,
+					fmt.Sprintf("%.2f", debt.Amount),
+				}
+				if err := writer.Write(row); err != nil {
+					return "", err
+				}
+			}
+		} else { //Debtor has no debts
+			row := []string{
+				debtor.Name,
+				fmt.Sprintf("%.2f", totalDebt),
+				paymentDateStr,
+				paymentAmountStr,
+				"",     // No reason (no debts)
+				"0.00", // No Amount
+			}
+			if err := writer.Write(row); err != nil {
+				return "", err
+			}
+		}
+	}
+
+	return tmpFile.Name(), nil // Return the full path to the temp file
+
+}
+
 // --- Command Handlers ---
 
 func handleStartCommand(bot *tgbotapi.BotAPI, chatID int64) {
@@ -256,6 +338,7 @@ func handleStartCommand(bot *tgbotapi.BotAPI, chatID int64) {
 		"Основные команды:\n" +
 		"/add - Добавить долг\n" +
 		"/debts - Посмотреть список должников и долги\n" +
+		"/exportcsv - Выгрузить данные в CSV\n" +
 		"/help - Помощь и список команд"
 	sendSimpleMessage(bot, chatID, text)
 }
@@ -307,8 +390,40 @@ func handleHelpCommand(bot *tgbotapi.BotAPI, chatID int64) {
 	text := "**Команды бота DebtTracker:**\n\n" +
 		"/add - Добавить новый долг. Бот спросит имя должника, причину и сумму.\n" +
 		"/debts - Показать список всех твоих должников.  Можно выбрать должника, чтобы увидеть детализацию долгов, закрыть или отредактировать долги.\n" +
+		"/exportcsv - Выгрузить данные в CSV файл.\n" +
 		"/help - Показать это сообщение со списком команд."
 	sendSimpleMessage(bot, chatID, text)
+}
+
+func handleExportCSVCommand(bot *tgbotapi.BotAPI, chatID int64) {
+	clearUserState(chatID)
+	filePath, err := generateCSV(chatID)
+	if err != nil {
+		log.Printf("Error generating CSV: %v", err)
+		if strings.Contains(err.Error(), "no debtors found") {
+			sendSimpleMessage(bot, chatID, "Нет данных для выгрузки. Сначала добавьте должников.")
+		} else {
+			sendSimpleMessage(bot, chatID, "Произошла ошибка при создании CSV файла.")
+		}
+
+		return
+	}
+
+	// Send the CSV file as a document
+	doc := tgbotapi.NewDocument(chatID, tgbotapi.FilePath(filePath))
+	_, err = bot.Send(doc)
+	if err != nil {
+		log.Printf("Error sending CSV: %v", err)
+		sendSimpleMessage(bot, chatID, "Произошла ошибка при отправке CSV файла.")
+		return
+	}
+
+	// Delete the temporary file *after* sending
+	err = os.Remove(filePath)
+	if err != nil {
+		log.Printf("Error deleting temp file: %v", err) // Log, but don't send to user
+	}
+
 }
 
 // --- Message Handler ---
@@ -465,9 +580,8 @@ func handleMessage(bot *tgbotapi.BotAPI, update tgbotapi.Update) {
 			sendSimpleMessage(bot, chatID, "Не удалось установить сумму платежа.")
 		} else {
 			sendSimpleMessage(bot, chatID, fmt.Sprintf("Сумма платежа для *%s* установлена на *%.2f ₽*", currentDebtor.Name, amount))
-			// showDebtorDetails is called *after* clearUserState
 		}
-		clearUserState(chatID) // Clear state *before* showing details
+		clearUserState(chatID)
 		showDebtorDetails(bot, chatID, currentDebtor.ID)
 
 	case StateEditingPaymentDate:
@@ -506,9 +620,8 @@ func handleMessage(bot *tgbotapi.BotAPI, update tgbotapi.Update) {
 			sendSimpleMessage(bot, chatID, "Не удалось обновить сумму платежа.")
 		} else {
 			sendSimpleMessage(bot, chatID, "Сумма платежа успешно обновлена.")
-			// showDebtorDetails is called *after* clearUserState
 		}
-		clearUserState(chatID) // Clear state *before* showing details
+		clearUserState(chatID)
 		showDebtorDetails(bot, chatID, currentDebtors[chatID].ID)
 
 	default:
@@ -532,11 +645,9 @@ func handleCallbackQuery(bot *tgbotapi.BotAPI, update tgbotapi.Update) {
 			log.Printf("Invalid debtor ID in callback: %v", err)
 			return
 		}
-		// showDebtorDetails should be called *after* clearUserState,
-		// and currentDebtor should be populated *before* the state is cleared.
+
 		debtor, err := getDebtorByID(debtorID)
 		if err != nil {
-			// Handle sql.ErrNoRows properly
 			if err == sql.ErrNoRows {
 				sendSimpleMessage(bot, chatID, "Должник не найден.")
 			} else {
@@ -546,8 +657,8 @@ func handleCallbackQuery(bot *tgbotapi.BotAPI, update tgbotapi.Update) {
 			clearUserState(chatID)
 			return
 		}
-		currentDebtors[chatID] = debtor // Set current debtor *before* clearing state
-		clearUserState(chatID)          // Clear state *before* showing details
+		currentDebtors[chatID] = debtor
+		clearUserState(chatID)
 		showDebtorDetails(bot, chatID, debtorID)
 
 	case strings.HasPrefix(data, "close_debt:"):
@@ -581,14 +692,13 @@ func handleCallbackQuery(bot *tgbotapi.BotAPI, update tgbotapi.Update) {
 		} else {
 			editMessageWithKeyboard(bot, chatID, messageID, "Долг закрыт.", tgbotapi.InlineKeyboardMarkup{})
 		}
-		showDebtorDetails(bot, chatID, currentDebtors[chatID].ID) // Refresh after closing
+		showDebtorDetails(bot, chatID, currentDebtors[chatID].ID)
 		clearUserState(chatID)
 
 	case data == "cancel_operation":
 		editMessageWithKeyboard(bot, chatID, messageID, "Операция отменена.", tgbotapi.InlineKeyboardMarkup{})
-		// showDebtorDetails is called *after* clearUserState
 		clearUserState(chatID)
-		if _, ok := currentDebtors[chatID]; ok { // Check if debtor exists
+		if _, ok := currentDebtors[chatID]; ok {
 			showDebtorDetails(bot, chatID, currentDebtors[chatID].ID)
 		}
 
@@ -749,7 +859,6 @@ func showDebtorDetails(bot *tgbotapi.BotAPI, chatID int64, debtorID int) {
 
 	debtsText.WriteString(fmt.Sprintf("\n*Общая сумма долга: %.2f ₽*", totalDebt))
 
-	// Add payment information
 	if debtor.PaymentDate.Valid {
 		debtsText.WriteString(fmt.Sprintf("\n\n*Дата платежа:* %s", debtor.PaymentDate.Time.Format("02.01.2006")))
 		keyboardButtons = append(keyboardButtons, tgbotapi.NewInlineKeyboardRow(
@@ -820,6 +929,8 @@ func main() {
 					handleDebtsCommand(bot, update.Message.Chat.ID)
 				case "help":
 					handleHelpCommand(bot, update.Message.Chat.ID)
+				case "exportcsv":
+					handleExportCSVCommand(bot, update.Message.Chat.ID)
 				default:
 					sendSimpleMessage(bot, update.Message.Chat.ID, "Неизвестная команда. Используй /help для списка команд.")
 					clearUserState(update.Message.Chat.ID)
