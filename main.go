@@ -260,17 +260,15 @@ func generateCSV(chatID int64) (string, error) {
 		return "", fmt.Errorf("no debtors found for chat %d", chatID)
 	}
 
-	// Create a temporary file
 	tmpFile, err := os.CreateTemp("", "debts_*.csv")
 	if err != nil {
 		return "", err
 	}
-	defer tmpFile.Close() // Ensure the file is closed
+	defer tmpFile.Close()
 
 	writer := csv.NewWriter(tmpFile)
 	defer writer.Flush()
 
-	// Write CSV header
 	header := []string{"Debtor Name", "Total Debt", "Payment Date", "Payment Amount", "Debt Reason", "Debt Amount"}
 	if err := writer.Write(header); err != nil {
 		return "", err
@@ -287,7 +285,6 @@ func generateCSV(chatID int64) (string, error) {
 			totalDebt += debt.Amount
 		}
 
-		// Format date and amount
 		paymentDateStr := ""
 		if debtor.PaymentDate.Valid {
 			paymentDateStr = debtor.PaymentDate.Time.Format("02.01.2006")
@@ -297,11 +294,11 @@ func generateCSV(chatID int64) (string, error) {
 			paymentAmountStr = fmt.Sprintf("%.2f", debtor.PaymentAmount.Float64)
 		}
 
-		if len(debts) > 0 { // Write a row for each debt
+		if len(debts) > 0 {
 			for _, debt := range debts {
 				row := []string{
 					debtor.Name,
-					fmt.Sprintf("%.2f", totalDebt), // Total for the *debtor*
+					fmt.Sprintf("%.2f", totalDebt),
 					paymentDateStr,
 					paymentAmountStr,
 					debt.Reason,
@@ -311,14 +308,14 @@ func generateCSV(chatID int64) (string, error) {
 					return "", err
 				}
 			}
-		} else { //Debtor has no debts
+		} else {
 			row := []string{
 				debtor.Name,
 				fmt.Sprintf("%.2f", totalDebt),
 				paymentDateStr,
 				paymentAmountStr,
-				"",     // No reason (no debts)
-				"0.00", // No Amount
+				"",
+				"0.00",
 			}
 			if err := writer.Write(row); err != nil {
 				return "", err
@@ -326,7 +323,7 @@ func generateCSV(chatID int64) (string, error) {
 		}
 	}
 
-	return tmpFile.Name(), nil // Return the full path to the temp file
+	return tmpFile.Name(), nil
 
 }
 
@@ -334,13 +331,29 @@ func generateCSV(chatID int64) (string, error) {
 
 func handleStartCommand(bot *tgbotapi.BotAPI, chatID int64) {
 	clearUserState(chatID)
+
+	// Define the path to your image file
+	imagePath := "botBanner.jpeg" //REPLACE
+
+	// 1. Send the photo
+	photo := tgbotapi.NewPhoto(chatID, tgbotapi.FilePath(imagePath))
+	//   photo.Caption = "Welcome to DebtTracker!" // Optional caption
+	_, err := bot.Send(photo)
+	if err != nil {
+		log.Printf("Error sending photo: %v", err)
+		// Fallback to text-only, if the image fails.  Don't return; send the text.
+		// You might want to send a message saying the image failed to load.
+		sendSimpleMessage(bot, chatID, "Привет! Не удалось загрузить изображение, но я DebtTracker и я помогу тебе вести учет долгов.")
+	}
+
+	// 2. Send the text message (separately, for guaranteed delivery)
 	text := "Привет! Я бот DebtTracker. Я помогу тебе вести учет долгов.\n\n" +
 		"Основные команды:\n" +
 		"/add - Добавить долг\n" +
 		"/debts - Посмотреть список должников и долги\n" +
 		"/exportcsv - Выгрузить данные в CSV\n" +
 		"/help - Помощь и список команд"
-	sendSimpleMessage(bot, chatID, text)
+	sendSimpleMessage(bot, chatID, text) // Use the existing function
 }
 
 func handleAddCommand(bot *tgbotapi.BotAPI, chatID int64) {
@@ -409,7 +422,6 @@ func handleExportCSVCommand(bot *tgbotapi.BotAPI, chatID int64) {
 		return
 	}
 
-	// Send the CSV file as a document
 	doc := tgbotapi.NewDocument(chatID, tgbotapi.FilePath(filePath))
 	_, err = bot.Send(doc)
 	if err != nil {
@@ -418,10 +430,9 @@ func handleExportCSVCommand(bot *tgbotapi.BotAPI, chatID int64) {
 		return
 	}
 
-	// Delete the temporary file *after* sending
 	err = os.Remove(filePath)
 	if err != nil {
-		log.Printf("Error deleting temp file: %v", err) // Log, but don't send to user
+		log.Printf("Error deleting temp file: %v", err)
 	}
 
 }
@@ -762,11 +773,10 @@ func handleCallbackQuery(bot *tgbotapi.BotAPI, update tgbotapi.Update) {
 
 	case data == "delete_debtor":
 		userStates[chatID] = StateConfirmingDeleteDebtor
-		keyboard := tgbotapi.NewInlineKeyboardMarkup(
-			tgbotapi.NewInlineKeyboardRow(
-				tgbotapi.NewInlineKeyboardButtonData("✅ Да, удалить", "confirm_delete_debtor"),
-				tgbotapi.NewInlineKeyboardButtonData("❌ Отмена", "cancel_operation"),
-			),
+		keyboard := tgbotapi.NewInlineKeyboardMarkup(tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData("✅ Да, удалить", "confirm_delete_debtor"),
+			tgbotapi.NewInlineKeyboardButtonData("❌ Отмена", "cancel_operation"),
+		),
 		)
 
 		editMessageWithKeyboard(bot, chatID, messageID, fmt.Sprintf("Вы уверены, что хотите удалить должника *%s*?  *Все долги этого должника будут удалены!*", currentDebtors[chatID].Name), keyboard)
